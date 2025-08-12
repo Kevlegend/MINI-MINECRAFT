@@ -1,18 +1,242 @@
-# This .gitignore is appropriate for repositories deployed to GitHub Pages and using
-# a Gemfile as specified at https://github.com/github/pages-gem#conventional
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>MiniCraft — tiny voxel prototype</title>
+  <style>
+    html,body { height:100%; margin:0; overflow:hidden; background:#6ab;}
+    #hud {
+      position: absolute; left: 10px; top: 10px; color: white; font-family: sans-serif;
+      background: rgba(0,0,0,0.3); padding:8px; border-radius:6px;
+    }
+    #instructions {
+      position: absolute; right: 10px; top: 10px; color: #111; font-family: sans-serif;
+      background: rgba(255,255,255,0.85); padding:8px; border-radius:6px;
+    }
+    canvas { display:block; }
+  </style>
+</head>
+<body>
+  <div id="hud">Blocks: 1=Grass  2=Dirt  3=Stone | Left click remove, Right click add</div>
+  <div id="instructions">Click to lock mouse. WASD to move, Space to jump.</div>
 
-# Basic Jekyll gitignores (synchronize to Jekyll.gitignore)
-_site/
-.sass-cache/
-.jekyll-cache/
-.jekyll-metadata
+  <!-- Three.js and PointerLockControls from CDN -->
+  <script src="https://unpkg.com/three@0.153.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.153.0/examples/js/controls/PointerLockControls.js"></script>
 
-# Additional Ruby/bundler ignore for when you run: bundle install
-/vendor
+  <script>
+  // --- Basic scene setup ---
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87CEEB); // sky blue
+  const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1000);
+  const renderer = new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
 
-# Specific ignore for GitHub Pages
-# GitHub Pages will always use its own deployed version of pages-gem 
-# This means GitHub Pages will NOT use your Gemfile.lock and therefore it is
-# counterproductive to check this file into the repository.
-# Details at https://github.com/github/pages-gem/issues/768
-Gemfile.lock
+  // lights
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.9);
+  scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+  dir.position.set(5,10,7);
+  scene.add(dir);
+
+  // grid/world representation
+  const blocks = new Map(); // key: "x,y,z" -> {mesh, type}
+  function key(x,y,z){ return `${x},${y},${z}`; }
+
+  // simple materials (colors)
+  const materials = {
+    1: new THREE.MeshLambertMaterial({color:0x4CAF50}), // grass
+    2: new THREE.MeshLambertMaterial({color:0x8B5A2B}), // dirt
+    3: new THREE.MeshLambertMaterial({color:0x888888}), // stone
+  };
+  let currentBlock = 1;
+
+  // reusable box geometry
+  const boxGeo = new THREE.BoxGeometry(1,1,1);
+
+  // create a flat platform
+  const size = 16;
+  for(let x=-size/2; x<size/2; x++){
+    for(let z=-size/2; z<size/2; z++){
+      addBlock(x, -1, z, 2); // dirt
+      if (Math.random() < 0.12) addBlock(x, 0, z, 3); // some stones on top
+      else addBlock(x, 0, z, 1); // grass on top
+    }
+  }
+
+  function addBlock(x,y,z, type = currentBlock){
+    const k = key(x,y,z);
+    if(blocks.has(k)) return;
+    const mesh = new THREE.Mesh(boxGeo, materials[type]);
+    mesh.position.set(x + 0.5, y + 0.5, z + 0.5); // align to grid
+    mesh.userData = {x,y,z,type};
+    scene.add(mesh);
+    blocks.set(k, {mesh,type});
+  }
+
+  function removeBlock(x,y,z){
+    const k = key(x,y,z);
+    const rec = blocks.get(k);
+    if(!rec) return;
+    scene.remove(rec.mesh);
+    blocks.delete(k);
+  }
+
+  // --- Player + controls ---
+  const controls = new THREE.PointerLockControls(camera, document.body);
+  document.addEventListener('click', ()=> controls.lock() );
+
+  // start camera position
+  camera.position.set(0, 2, 5);
+
+  // movement
+  const velocity = new THREE.Vector3();
+  const direction = new THREE.Vector3();
+  const onGround = {v:false}; // simple ground flag
+  const keys = {};
+  document.addEventListener('keydown', e => { keys[e.code]=true; if(e.code==='Digit1') currentBlock=1; if(e.code==='Digit2') currentBlock=2; if(e.code==='Digit3') currentBlock=3; });
+  document.addEventListener('keyup', e => { keys[e.code]=false; });
+
+  // raycaster for block add/remove
+  const raycaster = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+
+  // handle clicks: left remove, right add
+  window.addEventListener('mousedown', (ev) => {
+    if (!controls.isLocked) return;
+    // cast a ray from camera forward
+    raycaster.setFromCamera({x:0, y:0}, camera);
+    const hits = raycaster.intersectObjects(Array.from(blocks.values()).map(b=>b.mesh));
+    if(hits.length === 0) return;
+    const hit = hits[0];
+    const p = hit.point;
+    const n = hit.face.normal;
+    const targetX = Math.floor(p.x - n.x*0.01);
+    const targetY = Math.floor(p.y - n.y*0.01);
+    const targetZ = Math.floor(p.z - n.z*0.01);
+    if(ev.button === 0){
+      // left click -> remove
+      removeBlock(Math.floor(hit.object.userData.x), Math.floor(hit.object.userData.y), Math.floor(hit.object.userData.z));
+    } else if(ev.button === 2){
+      // right click -> add block adjacent (on surface normal)
+      const addX = Math.floor(p.x + n.x*0.5);
+      const addY = Math.floor(p.y + n.y*0.5);
+      const addZ = Math.floor(p.z + n.z*0.5);
+      addBlock(addX, addY, addZ, currentBlock);
+    }
+  });
+  // prevent context menu on right click
+  window.addEventListener('contextmenu', e => e.preventDefault());
+
+  // basic collision: check if a position intersects any block
+  function collides(x,y,z){
+    // check blocks occupying the cell (x,y,z)
+    return blocks.has(key(Math.floor(x), Math.floor(y), Math.floor(z)));
+  }
+
+  // animation loop + simple physics
+  let prevTime = performance.now();
+  function animate(){
+    requestAnimationFrame(animate);
+    const time = performance.now();
+    const dt = (time - prevTime) / 1000;
+    prevTime = time;
+
+    // movement input
+    direction.set(0,0,0);
+    if (keys['KeyW']) direction.z -= 1;
+    if (keys['KeyS']) direction.z += 1;
+    if (keys['KeyA']) direction.x -= 1;
+    if (keys['KeyD']) direction.x += 1;
+    direction.normalize();
+
+    // compute forward/right from camera rotation
+    const camQuat = camera.quaternion;
+    const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camQuat).setY(0).normalize();
+    const right = new THREE.Vector3(1,0,0).applyQuaternion(camQuat).setY(0).normalize();
+
+    const speed = 5.0;
+    velocity.x += (forward.x * direction.z + right.x * direction.x) * speed * dt;
+    velocity.z += (forward.z * direction.z + right.z * direction.x) * speed * dt;
+
+    // gravity
+    velocity.y -= 9.8 * dt;
+
+    // simple damping
+    velocity.x *= 0.9;
+    velocity.z *= 0.9;
+
+    // proposed next position
+    const pos = controls.getObject ? controls.getObject().position : camera.position;
+    let nextX = pos.x + velocity.x * dt;
+    let nextY = pos.y + velocity.y * dt;
+    let nextZ = pos.z + velocity.z * dt;
+
+    // collision resolution with axis-aligned checks (cell-based)
+    // floor collision
+    if(collides(Math.floor(nextX), Math.floor(nextY - 0.1), Math.floor(nextZ))){
+      // pushing up if hitting floor
+      velocity.y = Math.max(0, velocity.y);
+      nextY = Math.ceil(nextY);
+      onGround.v = true;
+    } else {
+      onGround.v = false;
+    }
+
+    // small checks to prevent walking through walls (x and z)
+    if(collides(Math.floor(nextX + 0.3), Math.floor(nextY - 0.5), Math.floor(nextZ))) {
+      nextX = pos.x;
+      velocity.x = 0;
+    }
+    if(collides(Math.floor(nextX - 0.3), Math.floor(nextY - 0.5), Math.floor(nextZ))) {
+      nextX = pos.x;
+      velocity.x = 0;
+    }
+    if(collides(Math.floor(nextX), Math.floor(nextY - 0.5), Math.floor(nextZ + 0.3))) {
+      nextZ = pos.z;
+      velocity.z = 0;
+    }
+    if(collides(Math.floor(nextX), Math.floor(nextY - 0.5), Math.floor(nextZ - 0.3))) {
+      nextZ = pos.z;
+      velocity.z = 0;
+    }
+
+    // apply position
+    pos.set(nextX, nextY, nextZ);
+
+    // handle jump
+    if (keys['Space'] && onGround.v){
+      velocity.y = 6;
+      onGround.v = false;
+    }
+
+    // keep camera a bit above ground when not locked controls
+    if(!controls.isLocked){
+      camera.position.y = 5;
+    }
+
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  // resize
+  window.addEventListener('resize', ()=> {
+    camera.aspect = innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  // expose controls object for pointer lock movement
+  scene.add(controls.getObject ? controls.getObject() : new THREE.Object3D());
+
+  // friendly tip: show current block in HUD
+  const hud = document.getElementById('hud');
+  setInterval(()=> {
+    const name = currentBlock===1 ? 'Grass' : currentBlock===2 ? 'Dirt' : 'Stone';
+    hud.textContent = `Block: ${name} (press 1/2/3) | Left click remove, Right click add`;
+  }, 200);
+
+  </script>
+</body>
+</html>
